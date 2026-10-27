@@ -1,0 +1,46 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check the sim's module script and the bridge
+        run: |
+          python3 - <<'EOF'
+          import re, pathlib
+          html = pathlib.Path('web/index.html').read_text()
+          js = re.search(r'<script type="module">(.*?)</script>', html, re.S).group(1)
+          pathlib.Path('/tmp/sim.mjs').write_text(js.replace("from 'three'", "from '/tmp/three-stub.mjs'"))
+          pathlib.Path('/tmp/three-stub.mjs').write_text('export default {}')
+          EOF
+          node --check /tmp/sim.mjs
+          python3 -m py_compile bridge/fly_tello.py
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

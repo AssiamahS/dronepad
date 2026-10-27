@@ -1,0 +1,11 @@
+{
+  "name": "DronePad",
+  "short_name": "DronePad",
+  "description": "Fly a quadcopter in your browser with a PS4, Xbox or any gamepad.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#06080c",
+  "theme_color": "#06080c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

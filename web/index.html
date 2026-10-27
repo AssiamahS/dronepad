@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#06080c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<title>DronePad</title>
+<meta name="description" content="Fly a quadcopter in your browser with a PS4, Xbox or any gamepad. Mode 2 sticks, FPV and chase camera, gates, keyboard fallback.">
+<style>
+  :root { --bg:#06080c; --fg:#e8ecf1; --mute:#8b95a3; --line:#1d242e; --acc:#5ee1a0; --warn:#ffb454; --bad:#ff6b6b; --panel:rgba(10,13,18,.82); }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; overflow:hidden; -webkit-user-select:none; user-select:none; }
+  canvas { display:block; width:100%; height:100%; }
+  #hud { position:fixed; inset:0; pointer-events:none; }
+  .panel { position:absolute; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; backdrop-filter:blur(8px); }
+  #top { top:max(10px,env(safe-area-inset-top)); left:12px; right:12px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+  #status { pointer-events:auto; }
+  #status b { color:var(--acc); }
+  #status.off b { color:var(--warn); }
+  #tele { text-align:right; font-variant-numeric:tabular-nums; color:var(--mute); }
+  #tele span { color:var(--fg); }
+  #bottom { position:absolute; left:12px; right:12px; bottom:max(12px,env(safe-area-inset-bottom)); display:flex; justify-content:space-between; align-items:flex-end; gap:10px; }
+  .stick { width:92px; height:92px; border-radius:50%; border:1px solid var(--line); background:radial-gradient(circle at center, #0f141b, #080b10); position:relative; }
+  .stick i { position:absolute; width:18px; height:18px; border-radius:50%; background:var(--acc); left:calc(50% - 9px); top:calc(50% - 9px); box-shadow:0 0 12px var(--acc); }
+  .stick small { position:absolute; bottom:-18px; left:0; right:0; text-align:center; color:var(--mute); font-size:11px; }
+  #sticks { display:flex; gap:22px; padding-bottom:18px; }
+  #btns { pointer-events:auto; display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; max-width:52vw; }
+  button { font:inherit; font-weight:650; color:var(--fg); background:#111722; border:1px solid var(--line); border-radius:10px; padding:9px 12px; cursor:pointer; }
+  button.on { border-color:var(--acc); color:var(--acc); }
+  #center { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); text-align:center; max-width:360px; }
+  #center h1 { margin:0 0 6px; font-size:26px; letter-spacing:-.02em; }
+  #center p { margin:0 0 6px; color:var(--mute); }
+  #center.hide { display:none; }
+  #tester { pointer-events:auto; position:absolute; left:12px; top:76px; max-height:60vh; overflow:auto; display:none; font-family:ui-monospace,Menlo,monospace; font-size:12px; min-width:230px; }
+  #tester.show { display:block; }
+  .bar { height:6px; background:#141a23; border-radius:3px; overflow:hidden; margin:2px 0 6px; }
+  .bar i { display:block; height:100%; background:var(--acc); width:50%; }
+  .bb { display:inline-block; width:24px; height:24px; line-height:24px; text-align:center; border-radius:6px; background:#141a23; margin:2px; color:var(--mute); }
+  .bb.on { background:var(--acc); color:#04120a; }
+  #toast { position:absolute; left:50%; bottom:120px; transform:translateX(-50%); background:var(--panel); border:1px solid var(--line); padding:8px 14px; border-radius:10px; opacity:0; transition:opacity .25s; font-weight:650; }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div id="top">
+    <div id="status" class="panel off"><b>No controller</b><div id="statusSub">Press any button on the PS4 pad (Bluetooth or USB)</div></div>
+    <div id="tele" class="panel">alt <span id="tAlt">0.0</span> m · spd <span id="tSpd">0.0</span> m/s<br>gates <span id="tGates">0/8</span> · best <span id="tBest">—</span> · <span id="tTime">0.0</span>s</div>
+  </div>
+  <div id="tester" class="panel"></div>
+  <div id="center" class="panel">
+    <h1>DronePad</h1>
+    <p>Mode 2: <b>left stick</b> throttle / yaw · <b>right stick</b> pitch / roll.</p>
+    <p>Keyboard works too: W/S throttle, A/D yaw, arrows pitch/roll.</p>
+    <p>Fly through all 8 gates. R or Options resets.</p>
+  </div>
+  <div id="bottom">
+    <div id="sticks">
+      <div class="stick"><i id="sL"></i><small>THR / YAW</small></div>
+      <div class="stick"><i id="sR"></i><small>PITCH / ROLL</small></div>
+    </div>
+    <div id="btns">
+      <button id="bCam">Chase cam</button>
+      <button id="bMode">Angle mode</button>
+      <button id="bTest">Tester</button>
+      <button id="bReset">Reset</button>
+    </div>
+  </div>
+  <div id="toast"></div>
+</div>
+
+<script type="importmap">{ "imports": { "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.170.0/three.module.min.js" } }</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------- input
+// Standard Gamepad mapping (W3C): axes 0/1 = left stick, 2/3 = right stick, Y is + DOWN.
+// DualShock 4 and Xbox pads both land on "standard" in Safari, Chrome and Firefox.
+const DEAD = 0.08, EXPO = 0.4;
+const curve = (v) => { v = Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD); return v * (Math.abs(v) * EXPO + (1 - EXPO)); };
+const keys = new Set();
+addEventListener('keydown', (e) => { keys.add(e.code); if (e.code === 'KeyR') reset(); if (e.code === 'KeyC') toggleCam(); if (e.code === 'KeyM') toggleMode(); });
+addEventListener('keyup', (e) => keys.delete(e.code));
+let padIndex = null, lastButtons = [];
+addEventListener('gamepadconnected', (e) => { padIndex = e.gamepad.index; setStatus(e.gamepad); toast('Controller connected'); });
+addEventListener('gamepaddisconnected', () => { padIndex = null; setStatus(null); });
+function setStatus(gp) {
+  const el = document.getElementById('status');
+  el.classList.toggle('off', !gp);
+  el.querySelector('b').textContent = gp ? gp.id.replace(/\(.*?\)/g, '').trim().slice(0, 36) : 'No controller';
+  document.getElementById('statusSub').textContent = gp ? (gp.mapping === 'standard' ? 'standard mapping' : 'non-standard mapping, check Tester') : 'Press any button on the PS4 pad (Bluetooth or USB)';
+}
+function readInput() {
+  let gp = null;
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  if (padIndex !== null) gp = pads[padIndex];
+  if (!gp) for (const p of pads) if (p) { gp = p; padIndex = p.index; setStatus(p); break; }
+  const inp = { thr: 0, yaw: 0, pitch: 0, roll: 0, pressed: [] };
+  if (gp) {
+    inp.yaw = curve(gp.axes[0] || 0);
+    inp.thr = -curve(gp.axes[1] || 0);      // up = positive
+    inp.roll = curve(gp.axes[2] || 0);
+    inp.pitch = -curve(gp.axes[3] || 0);    // forward = positive
+    gp.buttons.forEach((b, i) => { if (b.pressed && !lastButtons[i]) inp.pressed.push(i); });
+    lastButtons = gp.buttons.map((b) => b.pressed);
+    if (tester.classList.contains('show')) drawTester(gp);
+  }
+  // keyboard fallback
+  if (keys.has('KeyW')) inp.thr = 1; if (keys.has('KeyS')) inp.thr = -1;
+  if (keys.has('KeyA')) inp.yaw = -1; if (keys.has('KeyD')) inp.yaw = 1;
+  if (keys.has('ArrowUp')) inp.pitch = 1; if (keys.has('ArrowDown')) inp.pitch = -1;
+  if (keys.has('ArrowLeft')) inp.roll = -1; if (keys.has('ArrowRight')) inp.roll = 1;
+  return inp;
+}
+const tester = document.getElementById('tester');
+function drawTester(gp) {
+  const names = ['✕', '○', '□', '△', 'L1', 'R1', 'L2', 'R2', 'Sh', 'Op', 'L3', 'R3', '↑', '↓', '←', '→', 'PS'];
+  let h = `<div>${gp.id.slice(0, 40)}<br>mapping: ${gp.mapping || 'none'} · ${gp.axes.length} axes · ${gp.buttons.length} btns</div>`;
+  gp.axes.forEach((a, i) => { h += `axis ${i} ${a.toFixed(2)}<div class="bar"><i style="width:${(a + 1) * 50}%"></i></div>`; });
+  h += gp.buttons.map((b, i) => `<span class="bb ${b.pressed ? 'on' : ''}" title="button ${i}">${names[i] || i}</span>`).join('');
+  tester.innerHTML = h;
+}
+
+// ---------------------------------------------------------------- world
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1220);
+scene.fog = new THREE.Fog(0x0b1220, 60, 220);
+const camera = new THREE.PerspectiveCamera(80, 1, 0.1, 400);
+scene.add(new THREE.HemisphereLight(0x9fb8ff, 0x1a1a1a, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1); sun.position.set(30, 60, 20); scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600, 60, 60), new THREE.MeshStandardMaterial({ color: 0x173424, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; scene.add(ground);
+const grid = new THREE.GridHelper(600, 120, 0x2a5a3f, 0x1c3a2b); grid.position.y = 0.01; scene.add(grid);
+
+// scattered blocks so speed is visible
+const blockMat = new THREE.MeshStandardMaterial({ color: 0x3a4660, roughness: .8 });
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+for (let i = 0; i < 90; i++) {
+  const h = 3 + rnd() * 18, w = 2 + rnd() * 6;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), blockMat);
+  m.position.set((rnd() - .5) * 400, h / 2, (rnd() - .5) * 400);
+  if (m.position.length() < 25) continue;
+  scene.add(m);
+}
+
+// gates: a loop course
+const gates = [], GATE_R = 4;
+const gatePts = [[0, 6, -30], [25, 9, -60], [55, 7, -40], [60, 12, 0], [35, 8, 35], [0, 10, 55], [-35, 7, 30], [-30, 6, -5]];
+gatePts.forEach((p, i) => {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(GATE_R, 0.35, 10, 36), new THREE.MeshStandardMaterial({ color: 0xff8c42, emissive: 0x552200 }));
+  ring.position.set(...p);
+  const next = gatePts[(i + 1) % gatePts.length];
+  ring.lookAt(next[0], p[1], next[2]);
+  scene.add(ring); gates.push(ring);
+});
+
+// drone
+const drone = new THREE.Group();
+const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.5), new THREE.MeshStandardMaterial({ color: 0x1f2937 }));
+drone.add(body);
+const armGeo = new THREE.BoxGeometry(1.1, 0.05, 0.08);
+[0.785, -0.785].forEach((r) => { const a = new THREE.Mesh(armGeo, body.material); a.rotation.y = r; drone.add(a); });
+const props = [];
+[[.4, .4], [-.4, .4], [.4, -.4], [-.4, -.4]].forEach(([x, z], i) => {
+  const p = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.02, 16), new THREE.MeshStandardMaterial({ color: i < 2 ? 0xff5555 : 0x55aaff, transparent: true, opacity: 0.45 }));
+  p.position.set(x, 0.08, z); drone.add(p); props.push(p);
+});
+const nose = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.25, 8), new THREE.MeshStandardMaterial({ color: 0xff8c42 }));
+nose.rotation.x = -Math.PI / 2; nose.position.set(0, 0.05, -0.38); drone.add(nose);
+scene.add(drone);
+
+// ---------------------------------------------------------------- physics
+const G = 9.81, MASS = 0.6, MAX_THRUST = 18, DRAG = 0.12, ANG_DRAG = 4;
+const st = { pos: new THREE.Vector3(0, 0.1, 0), vel: new THREE.Vector3(), q: new THREE.Quaternion(), w: new THREE.Vector3(), armed: false, crashed: false, t: 0, next: 0, best: null, mode: 'angle', cam: 'chase' };
+function reset() {
+  st.pos.set(0, 0.1, 0); st.vel.set(0, 0, 0); st.q.identity(); st.w.set(0, 0, 0);
+  st.crashed = false; st.t = 0; st.next = 0;
+  gates.forEach((g) => g.material.color.set(0xff8c42));
+  toast('Reset');
+}
+function toggleCam() { st.cam = st.cam === 'chase' ? 'fpv' : 'chase'; document.getElementById('bCam').textContent = st.cam === 'chase' ? 'Chase cam' : 'FPV cam'; }
+function toggleMode() { st.mode = st.mode === 'angle' ? 'acro' : 'angle'; document.getElementById('bMode').textContent = st.mode === 'angle' ? 'Angle mode' : 'Acro mode'; toast(st.mode === 'angle' ? 'Angle: self-levels' : 'Acro: rates, no self-level'); }
+document.getElementById('bCam').onclick = toggleCam;
+document.getElementById('bMode').onclick = toggleMode;
+document.getElementById('bReset').onclick = reset;
+document.getElementById('bTest').onclick = () => { tester.classList.toggle('show'); document.getElementById('bTest').classList.toggle('on'); };
+let toastT; function toast(m) { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 1400); }
+
+const up = new THREE.Vector3(0, 1, 0), tmpV = new THREE.Vector3(), tmpQ = new THREE.Quaternion(), eul = new THREE.Euler();
+function step(dt, inp) {
+  if (st.crashed) return;
+  // Gamepad sticks self-centre, so centre = hover (unlike a real radio where centre = half throttle).
+  // Pushing up adds climb, pulling down cuts thrust toward zero. That is the "throttle floor" trick
+  // every PS4→drone build uses, done the honest way.
+  const hover = (MASS * G) / MAX_THRUST;            // ~0.33
+  const thr = THREE.MathUtils.clamp(hover + inp.thr * (inp.thr > 0 ? 1 - hover : hover), 0, 1);
+
+  if (st.mode === 'angle') {
+    // target attitude from sticks, PD toward it
+    const MAX_TILT = 0.6; // rad (~35°)
+    eul.setFromQuaternion(st.q, 'YXZ');
+    const targetPitch = -inp.pitch * MAX_TILT, targetRoll = -inp.roll * MAX_TILT;
+    const kp = 12, kd = 2.5;
+    st.w.x += ((targetPitch - eul.x) * kp - st.w.x * kd) * dt;
+    st.w.z += ((targetRoll - eul.z) * kp - st.w.z * kd) * dt;
+    st.w.y += (-inp.yaw * 3.0 - st.w.y) * 8 * dt;
+  } else {
+    const RATE = 5.5;
+    st.w.x += (-inp.pitch * RATE - st.w.x) * 10 * dt;
+    st.w.z += (-inp.roll * RATE - st.w.z) * 10 * dt;
+    st.w.y += (-inp.yaw * 3.5 - st.w.y) * 10 * dt;
+  }
+  // integrate orientation (body rates)
+  tmpQ.set(st.w.x * dt / 2, st.w.y * dt / 2, st.w.z * dt / 2, 1).normalize();
+  st.q.multiply(tmpQ).normalize();
+  // forces
+  tmpV.copy(up).applyQuaternion(st.q).multiplyScalar(thr * MAX_THRUST / MASS);
+  tmpV.y -= G;
+  tmpV.addScaledVector(st.vel, -DRAG * st.vel.length() / MASS);
+  st.vel.addScaledVector(tmpV, dt);
+  st.pos.addScaledVector(st.vel, dt);
+  // ground
+  if (st.pos.y < 0.1) {
+    st.pos.y = 0.1;
+    const vy = st.vel.y; st.vel.y = 0; st.vel.multiplyScalar(0.6);
+    eul.setFromQuaternion(st.q, 'YXZ');
+    if (vy < -6 || Math.abs(eul.x) > 1 || Math.abs(eul.z) > 1) { st.crashed = true; toast('Crashed, press R / Options'); }
+    else if (thr <= hover + 0.01) { st.q.setFromEuler(new THREE.Euler(0, eul.y, 0, 'YXZ')); st.w.set(0, 0, 0); }
+  }
+  if (st.pos.y > 0.3) st.t += dt;
+  // gates
+  const g = gates[st.next];
+  if (g && st.pos.distanceTo(g.position) < GATE_R * 0.9) {
+    g.material.color.set(0x5ee1a0); st.next++;
+    if (st.next === gates.length) { if (st.best === null || st.t < st.best) st.best = st.t; toast(`Course done in ${st.t.toFixed(1)}s`); st.next = 0; st.t = 0; gates.forEach((x) => x.material.color.set(0xff8c42)); }
+  }
+}
+
+// ---------------------------------------------------------------- loop
+const camOff = new THREE.Vector3(), lookAt = new THREE.Vector3();
+let last = performance.now(), spin = 0;
+function frame(now) {
+  const dt = Math.min(0.033, (now - last) / 1000); last = now;
+  const inp = readInput();
+  if (inp.pressed.includes(9) || inp.pressed.includes(8)) reset();   // Options / Share
+  if (inp.pressed.includes(3)) toggleCam();                           // △ / Y
+  if (inp.pressed.includes(2)) toggleMode();                          // □ / X
+  for (let i = 0; i < 4; i++) step(dt / 4, inp);
+  drone.position.copy(st.pos); drone.quaternion.copy(st.q);
+  spin += dt * 40; props.forEach((p, i) => p.rotation.y = i % 2 ? spin : -spin);
+  if (st.cam === 'chase') {
+    camOff.set(0, 1.6, 4.5).applyAxisAngle(up, new THREE.Euler().setFromQuaternion(st.q, 'YXZ').y);
+    camera.position.lerp(tmpV.copy(st.pos).add(camOff), 1 - Math.pow(0.001, dt));
+    lookAt.copy(st.pos); camera.lookAt(lookAt);
+  } else {
+    camera.position.copy(st.pos).add(tmpV.set(0, 0.1, -0.2).applyQuaternion(st.q));
+    camera.quaternion.copy(st.q).multiply(tmpQ.setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.35)); // 20° camera uptilt like a real quad
+  }
+  // hud
+  document.getElementById('sL').style.transform = `translate(${inp.yaw * 32}px,${-inp.thr * 32}px)`;
+  document.getElementById('sR').style.transform = `translate(${inp.roll * 32}px,${-inp.pitch * 32}px)`;
+  document.getElementById('tAlt').textContent = (st.pos.y - 0.1).toFixed(1);
+  document.getElementById('tSpd').textContent = st.vel.length().toFixed(1);
+  document.getElementById('tGates').textContent = `${st.next}/${gates.length}`;
+  document.getElementById('tBest').textContent = st.best === null ? '—' : st.best.toFixed(1) + 's';
+  document.getElementById('tTime').textContent = st.t.toFixed(1);
+  if (st.pos.y > 0.5) document.getElementById('center').classList.add('hide');
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
